@@ -4,15 +4,15 @@ NIM Search - Free AI search using NVIDIA NIM API.
 
 Two-pass system:
   Pass 1: Query multiple free AI models in parallel for raw answers
-  Pass 2: Summarize, extract links, format cleanly
+  Pass 2: Summarize, cross-reference, and extract links
 
 Replaces paid search APIs (Brave, etc.) with free NVIDIA NIM models.
 
 Usage:
     python3 nimsearch.py "what is linux namespaces"
     python3 nimsearch.py "best python web frameworks" --json
-    python3 nimsearch.py --config models.yaml
     python3 nimsearch.py "query" --pass1-only
+    python3 nimsearch.py --list-models
 
 Requirements: Python 3.8+, no external dependencies
 """
@@ -30,29 +30,229 @@ from urllib.error import HTTPError, URLError
 
 API_BASE = "https://integrate.api.nvidia.com/v1"
 
-DEFAULT_MODELS = [
-    {
+
+# ── All free models on NVIDIA NIM (June 2026) ──
+# Filtered to chat/instruct models only (excludes embeddings, classifiers, etc.)
+ALL_MODELS = {
+    # NVIDIA
+    "nemotron-70b": {
         "id": "nvidia/llama-3.1-nemotron-70b-instruct",
         "name": "Nemotron 70B",
-        "role": "searcher",
+        "publisher": "NVIDIA",
+        "size": "70B",
+        "best_for": "search, reasoning, instruction following",
     },
-    {
+    "nemotron-51b": {
+        "id": "nvidia/llama-3.1-nemotron-51b-instruct",
+        "name": "Nemotron 51B",
+        "publisher": "NVIDIA",
+        "size": "51B",
+        "best_for": "balanced performance",
+    },
+    "nemotron-nano": {
+        "id": "nvidia/llama-3.1-nemotron-nano-8b-v1",
+        "name": "Nemotron Nano 8B",
+        "publisher": "NVIDIA",
+        "size": "8B",
+        "best_for": "fast responses, low latency",
+    },
+
+    # Meta
+    "maverick": {
         "id": "meta/llama-4-maverick-17b-128e-instruct",
         "name": "Llama 4 Maverick",
-        "role": "searcher",
+        "publisher": "Meta",
+        "size": "17B MoE",
+        "best_for": "general purpose, most popular (22M uses)",
     },
-    {
-        "id": "nvidia/nemotron-3-8b-chat-steerlm-filter",
-        "name": "Nemotron 8B",
-        "role": "searcher",
+    "llama-3.3": {
+        "id": "meta/llama-3.3-70b-instruct",
+        "name": "Llama 3.3 70B",
+        "publisher": "Meta",
+        "size": "70B",
+        "best_for": "reasoning, complex tasks",
     },
-]
+    "llama-3.1-70b": {
+        "id": "meta/llama-3.1-70b-instruct",
+        "name": "Llama 3.1 70B",
+        "publisher": "Meta",
+        "size": "70B",
+        "best_for": "general purpose, well-tested",
+    },
+    "llama-3.1-8b": {
+        "id": "meta/llama-3.1-8b-instruct",
+        "name": "Llama 3.1 8B",
+        "publisher": "Meta",
+        "size": "8B",
+        "best_for": "fast, lightweight",
+    },
+    "llama-3.2-90b-vision": {
+        "id": "meta/llama-3.2-90b-vision-instruct",
+        "name": "Llama 3.2 90B Vision",
+        "publisher": "Meta",
+        "size": "90B",
+        "best_for": "multimodal (image + text)",
+    },
 
-SUMMARIZER = {
-    "id": "nvidia/llama-3.1-nemotron-70b-instruct",
-    "name": "Nemotron 70B (summarizer)",
-    "role": "summarizer",
+    # Mistral
+    "mistral-large-3": {
+        "id": "mistralai/mistral-large-3-675b-instruct-2512",
+        "name": "Mistral Large 3 (675B)",
+        "publisher": "Mistral",
+        "size": "675B",
+        "best_for": "top-tier reasoning, professional",
+    },
+    "mistral-nemotron": {
+        "id": "mistralai/mistral-nemotron",
+        "name": "Mistral Nemotron",
+        "publisher": "Mistral/NVIDIA",
+        "size": "-",
+        "best_for": "agentic workflows, function calling",
+    },
+    "mistral-medium": {
+        "id": "mistralai/mistral-medium-3.5-128b",
+        "name": "Mistral Medium 3.5",
+        "publisher": "Mistral",
+        "size": "128B",
+        "best_for": "balanced, good value",
+    },
+    "mistral-small-4": {
+        "id": "mistralai/mistral-small-4-119b-2603",
+        "name": "Mistral Small 4",
+        "publisher": "Mistral",
+        "size": "119B",
+        "best_for": "fast, efficient",
+    },
+    "codestral": {
+        "id": "mistralai/codestral-22b-instruct-v0.1",
+        "name": "Codestral 22B",
+        "publisher": "Mistral",
+        "size": "22B",
+        "best_for": "code generation",
+    },
+    "ministral-14b": {
+        "id": "mistralai/ministral-14b-instruct-2512",
+        "name": "Ministral 14B",
+        "publisher": "Mistral",
+        "size": "14B",
+        "best_for": "fast coding",
+    },
+
+    # MiniMax
+    "minimax-m2.7": {
+        "id": "minimaxai/minimax-m2.7",
+        "name": "MiniMax M2.7",
+        "publisher": "MiniMax",
+        "size": "230B",
+        "best_for": "coding, competes with Claude",
+    },
+
+    # Moonshot (Kimi)
+    "kimi-k2.6": {
+        "id": "moonshotai/kimi-k2.6",
+        "name": "Kimi K2.6",
+        "publisher": "Moonshot AI",
+        "size": "-",
+        "best_for": "search, long context, Chinese+English",
+    },
+
+    # DeepSeek
+    "deepseek-v4-flash": {
+        "id": "deepseek-ai/deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "publisher": "DeepSeek",
+        "size": "-",
+        "best_for": "fast reasoning, good at math",
+    },
+    "deepseek-v4-pro": {
+        "id": "deepseek-ai/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "publisher": "DeepSeek",
+        "size": "-",
+        "best_for": "complex reasoning, analysis",
+    },
+
+    # Google
+    "gemma-4-31b": {
+        "id": "google/gemma-4-31b-it",
+        "name": "Gemma 4 31B",
+        "publisher": "Google",
+        "size": "31B",
+        "best_for": "general purpose, well-rounded",
+    },
+    "gemma-3-12b": {
+        "id": "google/gemma-3-12b-it",
+        "name": "Gemma 3 12B",
+        "publisher": "Google",
+        "size": "12B",
+        "best_for": "fast, lightweight",
+    },
+
+    # Microsoft
+    "phi-4": {
+        "id": "microsoft/phi-4-mini-instruct",
+        "name": "Phi-4 Mini",
+        "publisher": "Microsoft",
+        "size": "-",
+        "best_for": "fast, efficient, edge use",
+    },
+    "phi-3.5-moe": {
+        "id": "microsoft/phi-3.5-moe-instruct",
+        "name": "Phi-3.5 MoE",
+        "publisher": "Microsoft",
+        "size": "-",
+        "best_for": "mixture of experts, balanced",
+    },
+
+    # ByteDance
+    "seed-oss-36b": {
+        "id": "bytedance/seed-oss-36b-instruct",
+        "name": "Seed OSS 36B",
+        "publisher": "ByteDance",
+        "size": "36B",
+        "best_for": "general purpose",
+    },
+
+    # IBM
+    "granite-34b": {
+        "id": "ibm/granite-34b-code-instruct",
+        "name": "Granite 34B Code",
+        "publisher": "IBM",
+        "size": "34B",
+        "best_for": "enterprise, code",
+    },
+
+    # 01.AI
+    "yi-large": {
+        "id": "01-ai/yi-large",
+        "name": "Yi Large",
+        "publisher": "01.AI",
+        "size": "-",
+        "best_for": "multilingual, reasoning",
+    },
+
+    # AI21
+    "jamba-1.5": {
+        "id": "ai21labs/jamba-1.5-large-instruct",
+        "name": "Jamba 1.5 Large",
+        "publisher": "AI21 Labs",
+        "size": "-",
+        "best_for": "long context, hybrid architecture",
+    },
+
+    # Abacus
+    "dracarys-70b": {
+        "id": "abacusai/dracarys-llama-3.1-70b-instruct",
+        "name": "Dracarys 70B",
+        "publisher": "Abacus AI",
+        "size": "70B",
+        "best_for": "instruct following, safety",
+    },
 }
+
+# Default search team: fast, diverse, high quality
+DEFAULT_SEARCH_MODELS = ["maverick", "nemotron-70b", "minimax-m2.7"]
+DEFAULT_SUMMARIZER = "nemotron-70b"
 
 
 class C:
@@ -70,7 +270,7 @@ def colored(text, color):
 
 
 class NIMClient:
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=***
         self.api_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
         if not self.api_key:
             raise ValueError(
@@ -138,23 +338,26 @@ class NIMClient:
 SEARCH_SYSTEM = """You are a helpful search assistant. Answer the user's query
 with factual, accurate information. Include specific details, numbers, and
 facts. If you reference something that has a URL, include the URL.
-Be concise but thorough. Focus on giving the user what they asked for."""
+Be concise but thorough. Focus on giving the user what they asked for.
+If you are unsure about something, say so rather than making it up."""
 
-def pass1_search(client, query, models):
+def pass1_search(client, query, model_keys):
     messages = [
         {"role": "system", "content": SEARCH_SYSTEM},
         {"role": "user", "content": query},
     ]
     results = []
-    with ThreadPoolExecutor(max_workers=len(models)) as executor:
-        futures = {
-            executor.submit(client.chat, m["id"], messages): m
-            for m in models
-        }
+    with ThreadPoolExecutor(max_workers=len(model_keys)) as executor:
+        futures = {}
+        for key in model_keys:
+            m = ALL_MODELS[key]
+            futures[executor.submit(client.chat, m["id"], messages)] = (key, m)
+
         for future in as_completed(futures):
-            model = futures[future]
+            key, model = futures[future]
             result = future.result()
             result["model_name"] = model["name"]
+            result["model_key"] = key
             if result["ok"]:
                 print(colored(f"  + {model['name']} ({result['elapsed']:.1f}s)", C.GREEN))
             else:
@@ -178,7 +381,7 @@ Format your response as:
 - Links at the bottom if any were referenced
 - Keep it under 300 words unless the topic demands more"""
 
-def pass2_summarize(client, query, raw_results, summarizer_model=None):
+def pass2_summarize(client, query, raw_results, summarizer_key=None):
     if not raw_results:
         return {"ok": False, "error": "No results to summarize"}
 
@@ -201,15 +404,25 @@ Answers from {len(sources)} different AI models:
 
 Provide a clean, cross-referenced summary of the above answers."""
 
-    model = summarizer_model or SUMMARIZER["id"]
+    key = summarizer_key or DEFAULT_SUMMARIZER
+    model = ALL_MODELS[key]
     messages = [
         {"role": "system", "content": SUMMARIZE_SYSTEM},
         {"role": "user", "content": summary_prompt},
     ]
 
-    result = client.chat(model, messages, temperature=0.1, max_tokens=1500)
-    result["model_name"] = SUMMARIZER["name"]
+    result = client.chat(model["id"], messages, temperature=0.1, max_tokens=1500)
+    result["model_name"] = model["name"]
     return result
+
+
+def list_models():
+    print(colored("\n  Available Models on NVIDIA NIM\n", C.CYAN))
+    print(f"  {'Shortname':<20} {'Model':<35} {'Size':<10} {'Best For'}")
+    print(f"  {'-'*20} {'-'*35} {'-'*10} {'-'*30}")
+    for key, m in sorted(ALL_MODELS.items()):
+        print(f"  {colored(key, C.GREEN):<30} {m['name']:<35} {m['size']:<10} {m['best_for']}")
+    print()
 
 
 def print_results(query, raw, summary, elapsed_total):
@@ -276,50 +489,49 @@ examples:
   nimsearch.py "what is linux namespaces"
   nimsearch.py "best python web frameworks" --json
   nimsearch.py "query" --pass1-only
+  nimsearch.py --list-models
+  nimsearch.py "query" --models maverick,kimi-k2.6,deepseek-v4-flash
 
 env:
   NVIDIA_API_KEY   your NVIDIA NIM API key (free at build.nvidia.com)
         """,
     )
-    parser.add_argument("query", help="Search query")
+    parser.add_argument("query", nargs="?", help="Search query")
     parser.add_argument("--api-key", help="NVIDIA API key (or set NVIDIA_API_KEY)")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--pass1-only", action="store_true", help="Skip summarization")
+    parser.add_argument("--list-models", action="store_true", help="List all available models")
     parser.add_argument(
         "--models",
-        help="Comma-separated model shortnames (llama, maverick, nemotron)",
+        help="Comma-separated model shortnames (e.g. maverick,kimi-k2.6,nemotron-70b)",
         default=None,
     )
-    parser.add_argument("--summarizer", help="Model to use for summarization", default=None)
+    parser.add_argument("--summarizer", help="Model shortname for summarization", default=None)
 
     args = parser.parse_args()
 
-    model_map = {
-        "nemotron": DEFAULT_MODELS[0],
-        "llama": DEFAULT_MODELS[1],
-        "maverick": DEFAULT_MODELS[1],
-        "nemotron-8b": DEFAULT_MODELS[2],
-    }
-    if args.models:
-        selected = []
-        for name in args.models.split(","):
-            name = name.strip().lower()
-            if name in model_map:
-                selected.append(model_map[name])
-            else:
-                selected.append({"id": name, "name": name, "role": "searcher"})
-        models = selected
-    else:
-        models = DEFAULT_MODELS
+    if args.list_models:
+        list_models()
+        return
 
-    if not args.pass1_only:
-        if args.summarizer:
-            if args.summarizer in model_map:
-                summarizer = model_map[args.summarizer]
-            else:
-                summarizer = {"id": args.summarizer, "name": args.summarizer}
-        else:
-            summarizer = SUMMARIZER
+    if not args.query:
+        parser.error("query is required (or use --list-models)")
+
+    # Parse model selection
+    if args.models:
+        model_keys = [k.strip() for k in args.models.split(",")]
+        for k in model_keys:
+            if k not in ALL_MODELS:
+                print(colored(f"  Unknown model: {k}", C.RED))
+                print(f"  Use --list-models to see available models")
+                sys.exit(1)
+    else:
+        model_keys = DEFAULT_SEARCH_MODELS
+
+    summarizer_key = args.summarizer
+    if summarizer_key and summarizer_key not in ALL_MODELS:
+        print(colored(f"  Unknown summarizer model: {summarizer_key}", C.RED))
+        sys.exit(1)
 
     try:
         client = NIMClient(api_key=args.api_key)
@@ -327,17 +539,19 @@ env:
         print(colored(f"  {e}", C.RED))
         sys.exit(1)
 
-    print(colored(f"\n  Searching: {args.query}\n", C.BOLD))
+    print(colored(f"\n  Searching: {args.query}", C.BOLD))
+    print(f"  Models: {', '.join(model_keys)}")
+    print()
 
     start = time.time()
 
     print(colored("  Pass 1: Querying models...", C.DIM))
-    raw = pass1_search(client, args.query, models)
+    raw = pass1_search(client, args.query, model_keys)
 
     summary = None
     if not args.pass1_only:
         print(colored("  Pass 2: Summarizing...", C.DIM))
-        summary = pass2_summarize(client, args.query, raw)
+        summary = pass2_summarize(client, args.query, raw, summarizer_key)
 
     elapsed = time.time() - start
 
